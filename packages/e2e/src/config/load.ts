@@ -3,6 +3,7 @@
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { ConfigurationError, InfrastructureError, isE2EError } from '../internal/errors.ts';
+import { withConfigSecretReferences } from '../secrets.ts';
 import type { E2EConfig } from '../types.ts';
 import { explainModuleError } from './diagnose.ts';
 import { freshModuleURL, registerLoader } from './esm-hooks.ts';
@@ -124,7 +125,7 @@ export async function loadConfigModule(configPath: string, options: ConfigLoadOp
   registerLoader();
   let moduleValue: unknown;
   try {
-    moduleValue = await importFresh(configPath, 'module', options.graph ?? false);
+    moduleValue = await withConfigSecretReferences(() => importFresh(configPath, 'module', options.graph ?? false));
   } catch (cause) {
     // A factory the config calls (web(), mobile()) or
     // `secrets.get()` refusing its options at evaluation is a config error

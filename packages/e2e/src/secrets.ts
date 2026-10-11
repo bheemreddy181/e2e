@@ -1,5 +1,7 @@
 /** Opaque secret and credential handles. */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { currentAttempt } from './expect/attempt.ts';
 import { credentialBrand, secretBrand } from './internal/brands.ts';
 import { ConfigurationError } from './internal/errors.ts';
 import { realmSlot } from './internal/realm-slot.ts';
@@ -27,6 +29,19 @@ export interface SecretRegistry {
 
 /** Global slot so test modules in an isolated realm reach the runner's registry. */
 const registrySlot = realmSlot<SecretRegistry>('e2e.secrets.v1');
+
+/** Config evaluation creates references, never handles bound to another run's registry. */
+const configReferences = realmSlot<AsyncLocalStorage<true>>('e2e.secrets.config-references.v1');
+
+/** Async-local and realm-shared: concurrent attempts keep their own registry untouched. */
+export function withConfigSecretReferences<T>(load: () => T): T {
+  let scope = configReferences.get(globalThis);
+  if (scope === undefined) {
+    scope = new AsyncLocalStorage<true>();
+    configReferences.set(globalThis, scope);
+  }
+  return scope.run(true, load);
+}
 
 /** Installed by the runner once config resolution completes. */
 export function setSecretRegistry(registry: SecretRegistry | undefined): void {
@@ -68,8 +83,14 @@ export function unavailableCode(secret: Pick<Secret, 'purpose'>): 'AUTH_CREDENTI
   return secret.purpose === 'password' ? 'AUTH_CREDENTIAL_UNAVAILABLE' : 'SECRET_UNAVAILABLE';
 }
 
+/** The live hosted attempt owns handle resolution, even while other workers hold configs. */
+function currentRegistry(): SecretRegistry | undefined {
+  if (configReferences.get(globalThis)?.getStore() === true) return undefined;
+  return currentAttempt()?.registry ?? registrySlot.get(globalThis);
+}
+
 function requireRegistry(caller: string, code: 'AUTH_CREDENTIAL_UNAVAILABLE' | 'SECRET_UNAVAILABLE'): SecretRegistry {
-  const registry = registrySlot.get(globalThis);
+  const registry = currentRegistry();
   if (registry === undefined) {
     throw new ConfigurationError(code, `${caller} is only available while the e2e runner is active`);
   }
@@ -101,7 +122,7 @@ function deferredSecret(name: string): Secret {
   const handle = {
     name,
     get purpose(): SecretPurpose {
-      return registrySlot.get(globalThis)?.allSecrets.get(name)?.purpose ?? 'generic-secret';
+      return currentRegistry()?.allSecrets.get(name)?.purpose ?? 'generic-secret';
     },
     [secretBrand]: true as const,
   };
@@ -143,7 +164,7 @@ export const credentials: Credentials = {
 
 export const secrets: Secrets = {
   get(name: string): Secret {
-    const registry = registrySlot.get(globalThis);
+    const registry = currentRegistry();
     if (registry === undefined) return deferredSecret(name);
     const resolved = registry.secrets.get(name);
     if (resolved === undefined) {

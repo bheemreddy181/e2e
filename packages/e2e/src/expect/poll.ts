@@ -165,7 +165,7 @@ function build<T>(
     (Object.keys(MATCHERS) as ValueMatcherName[]).map((name) => [
       name,
       (...args: unknown[]) => {
-        const scope = currentPollScope();
+        const scope = currentPollScope() ?? currentAttempt()?.polls;
         if (scope === undefined) return pollMatcher(read, options, negated, name, args, undefined);
         return scope.track(matcherLabel(negated, name), callStack(), (signal) =>
           pollMatcher(read, options, negated, name, args, signal),
