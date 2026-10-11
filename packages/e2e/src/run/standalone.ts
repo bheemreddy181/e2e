@@ -124,6 +124,8 @@ export async function openStandaloneHost(options: StandaloneHostOptions): Promis
   /** No release is allowed to skip the remaining owners, or run twice after a launch/close race. */
   const teardown = (): Promise<void> => {
     tearingDown ??= (async () => {
+      // Session failures are reported by close, but do not make clean worker teardown unsafe.
+      const priorFailures = errors.length;
       try {
         await executor?.dispose();
         errors.push(...(executor?.collectedRunErrors().map((error) => error.error) ?? []));
@@ -135,7 +137,7 @@ export async function openStandaloneHost(options: StandaloneHostOptions): Promis
       try { sessionStore.cleanup(); } catch (cause) { failure(cause); }
       releaseRegistry();
       // Failed worker teardown cannot prove this same engine is safe to reuse.
-      if (errors.length === 0) releaseEngine();
+      if (errors.length === priorFailures) releaseEngine();
     })();
     return tearingDown;
   };

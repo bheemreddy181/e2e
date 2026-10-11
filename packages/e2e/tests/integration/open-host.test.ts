@@ -838,6 +838,23 @@ describe('openHost', { timeout: 60_000 }, () => {
     expect(await sessionB.close()).toEqual([]);
   });
 
+  it('releases engine ownership after clean worker teardown despite a live session soft failure', async () => {
+    const fake = createFakeEngine({ fixtures: true });
+    const pool = provisioned(fake);
+    const opened = await host(pool.engine);
+    await opened.openSession({ name: 'soft failure during host close' });
+    sdkExpect.soft(1).toBe(2);
+    expect(await opened.close()).toContainEqual(expect.objectContaining({ code: 'ASSERTION_FAILED' }));
+    expect(fake.stats().disposes).toBe(1);
+    const replacement = await host(pool.engine);
+    const next = await replacement.openSession({ name: 'cleanly reacquired engine' });
+    expect(await next.fixtures.gadget.poke('reused')).toBe('poked reused');
+    expect(await replacement.close()).toEqual([]);
+    expect(fake.stats()).toMatchObject({ inits: 2, disposes: 2 });
+    expect(pool.prepares).toHaveLength(2);
+    expect(pool.finishes).toHaveLength(2);
+  });
+
   it('rejects a duplicate engine owner before prepare or init without disposing the live host, then permits clean reuse', async () => {
     const fake = createFakeEngine({ fixtures: true });
     const pool = provisioned(fake);

@@ -155,7 +155,8 @@ before throwing the error.
 | `headed` | `false` | Runs a browser engine headed |
 | `onNotice` | none | Progress outside a step, such as provisioning or an app process |
 
-A config file is loaded fresh for each host, including the files it imports.
+A config file and its project-file imports are loaded fresh for each host.
+Package imports remain shared; their singleton state is not recreated per host.
 A config value uses the engine instances in that value. Neither form allows
 overlapping hosted attempts in one process. A config value's engine instance
 belongs to one host until it closes; a second host must use another instance.
