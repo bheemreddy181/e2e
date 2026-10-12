@@ -6,8 +6,8 @@
  */
 
 import net from 'node:net';
-import { assignPorts, type ResolvedConfig } from '../config/resolve.ts';
-import { ConfigurationError, errorMessage } from '../internal/errors.ts';
+import { assignPorts, type ResolvedConfig, type ResolvedTarget } from '../config/resolve.ts';
+import { ConfigurationError, errorMessage, InfrastructureError } from '../internal/errors.ts';
 
 /**
  * The config with a free port assigned to every target whose URL asked for
@@ -45,6 +45,17 @@ export async function allocateAppPorts(config: ResolvedConfig, only?: readonly s
     await Promise.all(reserved.map(release));
   }
   return assignPorts(config, ports);
+}
+
+/**
+ * Ports for one target alone, for a session that opens it and must not fail
+ * on another target's URL. Returns the config and the target as it now reads.
+ */
+export async function allocateTargetPorts(config: ResolvedConfig, target: ResolvedTarget): Promise<{ config: ResolvedConfig; target: ResolvedTarget }> {
+  const allocated = await allocateAppPorts(config, [target.name]);
+  const assigned = allocated.targets.find((candidate) => candidate.name === target.name);
+  if (assigned === undefined) throw new InfrastructureError('WORKER_PROTOCOL', `target "${target.name}" vanished while its port was assigned`);
+  return { config: allocated, target: assigned };
 }
 
 /** Binds an ephemeral port on `host` and keeps it until released. */

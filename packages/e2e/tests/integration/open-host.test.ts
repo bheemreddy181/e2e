@@ -313,41 +313,48 @@ describe('openHost', { timeout: 60_000 }, () => {
     expect(await next.close()).toEqual([]);
   });
 
-  it('poisons a host after start failure and releases resources before another host can open', async () => {
-    const failed = createFakeEngine({ onStartAttempt: () => { throw new Error('launch broke'); } });
+  it('keeps the host usable after a launch failure, as a run keeps its worker for the retry', async () => {
+    let launches = 0;
+    const failed = createFakeEngine({ onStartAttempt: () => { if (launches++ === 0) throw new Error('launch broke'); } });
     const pool = provisioned(failed);
     const opened = await host(pool.engine);
     await expect(opened.openSession({ name: 'broken start' })).rejects.toThrow('launch broke');
-    expect(failed.stats().disposes).toBe(1);
-    expect(pool.finishes).toHaveLength(1);
-    await expect(opened.openSession({ name: 'cannot reuse' })).rejects.toMatchObject({ code: 'WORKER_PROTOCOL' });
-    expect(failed.stats().attemptsStarted).toBe(1);
-    await opened.close();
-    expect(failed.stats().disposes).toBe(1);
-    expect(pool.finishes).toHaveLength(1);
-    const fresh = createFakeEngine();
-    const replacement = await host(fresh.engine);
-    const session = await replacement.openSession({ name: 'replacement host' });
+    expect(failed.stats()).toMatchObject({ attemptsStarted: 1, attemptsEnded: 1, disposes: 0 });
+    expect(pool.finishes).toHaveLength(0);
+    const session = await opened.openSession({ name: 'next test on the same worker' });
+    expect(failed.stats()).toMatchObject({ inits: 1, attemptsStarted: 2 });
     expect(await session.close()).toEqual([]);
+    expect(await opened.close()).toEqual([]);
+    expect(failed.stats().disposes).toBe(1);
+    expect(pool.finishes).toHaveLength(1);
   });
 
-  it('does not release a failed opening until host teardown has completed', async () => {
-    const disposing = gate();
-    const release = heldGate();
-    const failed = createFakeEngine({
-      onStartAttempt: () => { throw new Error('start refused'); },
-      onDispose: async () => { disposing.resolve(); await release.promise; },
-    });
+  it('keeps the host usable after a session signal cancels its launch', async () => {
+    const controller = new AbortController();
+    const starting = gate();
+    const fake = createFakeEngine({ onStartAttempt: async (context, index) => {
+      if (index !== 0) return;
+      starting.resolve();
+      await new Promise<void>((resolve) => context.signal.addEventListener('abort', () => resolve(), { once: true }));
+    } });
+    const opened = await host(fake.engine);
+    const opening = opened.openSession({ name: 'cancelled launch', signal: controller.signal }).then(() => 'opened', (cause: unknown) => cause);
+    await starting.promise;
+    controller.abort();
+    expect(await opening).toMatchObject({ code: 'CANCELLED' });
+    expect(fake.stats()).toMatchObject({ attemptsStarted: 1, attemptsEnded: 1, disposes: 0 });
+    const next = await opened.openSession({ name: 'after cancelled launch' });
+    expect(await next.close()).toEqual([]);
+  });
+
+  it('releases a failed opening as soon as its launch has ended, so another host can open', async () => {
+    const failed = createFakeEngine({ onStartAttempt: () => { throw new Error('start refused'); } });
     const opened = await host(failed.engine);
     const other = createFakeEngine();
     const another = await host(other.engine);
-    const opening = opened.openSession({ name: 'failed owner' }).catch((cause: unknown) => cause);
-    await disposing.promise;
-    await expect(another.openSession({ name: 'too soon' })).rejects.toMatchObject({ code: 'WORKER_PROTOCOL' });
-    expect(other.stats().attemptsStarted).toBe(0);
-    release.resolve();
-    expect(await opening).toBeInstanceOf(Error);
-    const next = await another.openSession({ name: 'after failed cleanup' });
+    await expect(opened.openSession({ name: 'failed owner' })).rejects.toThrow('start refused');
+    const next = await another.openSession({ name: 'after failed launch elsewhere' });
+    expect(other.stats().attemptsStarted).toBe(1);
     expect(await next.close()).toEqual([]);
   });
 
@@ -545,6 +552,31 @@ describe('openHost', { timeout: 60_000 }, () => {
     expect(await session.close()).toEqual([]);
   });
 
+  it('cuts a core operation the engine never finishes at the session deadline', async () => {
+    const fake = createFakeEngine({ perform: () => new Promise<never>(() => undefined) });
+    const opened = await host(fake.engine, { config: config(fake.engine, { actionTimeout: 30_000 }) });
+    const session = await opened.openSession({ name: 'hung engine', timeout: 100 });
+    const started = Date.now();
+    await expect(session.fixtures.screen.getByRole('button', 'Submit').click()).rejects.toMatchObject({ code: 'TEST_TIMEOUT' });
+    expect(Date.now() - started).toBeLessThan(5_000);
+    const failures = await session.close();
+    expect(failures).toContainEqual(expect.objectContaining({ code: 'TEST_TIMEOUT', message: expect.stringContaining('session timed out after 100 ms') }));
+    expect(readFileSync(session.tracePath, 'utf8')).toContain('timed out');
+    const next = await opened.openSession({ name: 'after a hung engine', timeout: 5_000 });
+    expect(await next.close()).toEqual([]);
+  });
+
+  it('refuses a session timeout that is not positive and finite', async () => {
+    const fake = createFakeEngine();
+    const opened = await host(fake.engine);
+    for (const timeout of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      await expect(opened.openSession({ name: 'bad timeout', timeout })).rejects.toMatchObject({ code: 'INVALID_CONFIG' });
+    }
+    expect(fake.stats().attemptsStarted).toBe(0);
+    const session = await opened.openSession({ name: 'default timeout' });
+    expect(await session.close()).toEqual([]);
+  });
+
   it('records a blocked agent verdict as non-passing and retains failure-only video', async () => {
     const fake = createFakeEngine({ video: true });
     const opened = await host(fake.engine, { config: config(fake.engine, {
@@ -654,7 +686,7 @@ describe('openHost', { timeout: 60_000 }, () => {
     expect(inspect(error, { depth: 10 })).not.toContain(plaintext);
     expect(JSON.stringify(error)).not.toContain(plaintext);
     expect((error as Error).cause).toBeUndefined();
-    expect(fake.stats().disposes).toBe(1);
+    expect(fake.stats()).toMatchObject({ attemptsStarted: 1, attemptsEnded: 1, disposes: 0 });
   });
 
   it('redacts static secrets from host initialization errors', async () => {

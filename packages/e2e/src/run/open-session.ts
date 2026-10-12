@@ -4,7 +4,7 @@ import { discoverConfig, loadConfigModule, missingConfigError } from '../config/
 import { resolveConfig, type ResolvedConfig, type ResolvedTarget } from '../config/resolve.ts';
 import { classifyError, ConfigurationError, E2EError, serializeError, type SerializedError } from '../internal/errors.ts';
 import type { E2EConfig, TestFixtures } from '../types.ts';
-import { allocateAppPorts } from './app-ports.ts';
+import { allocateTargetPorts } from './app-ports.ts';
 import { processSecrets, registerStaticSecrets } from './secrecy.ts';
 import { openStandaloneHost } from './standalone.ts';
 import type { StepProgress, StepRecord } from './steps.ts';
@@ -27,7 +27,12 @@ export interface OpenHostOptions {
 export interface OpenSessionOptions {
   /** Test title, treated as untrusted text, never a raw path component. */
   readonly name: string;
-  /** Post-open operation deadline in milliseconds; default config timeout. Does not bound launch or close the session. */
+  /**
+   * Deadline for the session's operations in milliseconds, counted from when
+   * it opens; default the config's `timeout`. Positive and finite. Expiry cuts
+   * running operations and fails the session as timed out; it does not bound
+   * opening (use `signal`) and does not close the session.
+   */
   readonly timeout?: number | undefined;
   readonly signal?: AbortSignal | undefined;
   readonly agent?: string | undefined;
@@ -70,11 +75,9 @@ async function openHostWorker<Fixtures extends object>(options: OpenHostOptions)
   const env = options.env ?? process.env;
   const loaded = await loadHostConfig(cwd, options.config, env);
   registerStaticSecrets(loaded.allSecrets);
-  const selected = resolveTarget(loaded, options.target);
-  const config = await allocateAppPorts(loaded, [selected.name]);
-  const target = config.targets.find((candidate) => candidate.name === selected.name) ?? selected;
+  const { config, target } = await allocateTargetPorts(loaded, resolveTarget(loaded, options.target));
   const host = await openStandaloneHost({
-    config, target, headed: options.headed ?? false, env, hosted: true,
+    config, target, headed: options.headed ?? false, env,
     signal: options.signal ?? new AbortController().signal,
     ...(options.onNotice === undefined ? {} : { notice: options.onNotice }),
   });

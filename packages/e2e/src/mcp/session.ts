@@ -20,7 +20,7 @@ import type { ResolvedConfig, ResolvedTarget } from '../config/resolve.ts';
 import { secretHandle } from '../secrets.ts';
 import { classifyError, ConfigurationError, errorMessage, InfrastructureError, type SerializedError } from '../internal/errors.ts';
 import { LocatorEngine } from '../locator/engine.ts';
-import { allocateAppPorts } from '../run/app-ports.ts';
+import { allocateTargetPorts } from '../run/app-ports.ts';
 import { SharedAppProcesses } from '../run/process-pool.ts';
 import { outputLayout } from '../run/output.ts';
 import { processSecrets, registerStaticSecrets, sessionSecrecy } from '../run/secrecy.ts';
@@ -250,9 +250,7 @@ export class SessionHost {
     });
     // A session is its own run: a URL declared with port 0 gets a port here,
     // for the opened target alone, so another target's URL cannot fail the open.
-    const selected = this.resolveTarget(loaded, options.target);
-    const config = await allocateAppPorts(loaded, [selected.name]);
-    const target = config.targets.find((candidate) => candidate.name === selected.name) ?? selected;
+    const { config, target } = await allocateTargetPorts(loaded, this.resolveTarget(loaded, options.target));
     usage.resolved(target.platform, target.engine);
     this.sessions.claimEngine(id, target.name, target.engine);
     const ttlMs = this.options.ttlMs ?? SESSION_TTL_MS;

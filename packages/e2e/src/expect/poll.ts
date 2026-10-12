@@ -1,7 +1,7 @@
 /** expect.poll: re-reads a value until a synchronous matcher passes. */
 
 import { ConfigurationError, E2EError, isE2EError, TestError } from '../internal/errors.ts';
-import { Deadline, POLL_INTERVAL_MS, sleep, withAbort, withTimeout } from '../internal/time.ts';
+import { abortError, Deadline, POLL_INTERVAL_MS, sleep, withAbort, withTimeout } from '../internal/time.ts';
 import type { PollExpectation, PollOptions, ValueExpectation, ValueMatcherName } from '../types.ts';
 import { currentAttempt } from './attempt.ts';
 import { currentPollScope } from './poll-scope.ts';
@@ -51,8 +51,9 @@ function isNotYet(error: unknown): boolean {
   return isE2EError(error) && error.code === 'ASSERTION_FAILED';
 }
 
-function cancelled(): E2EError {
-  return new E2EError('infrastructure', 'CANCELLED', 'operation cancelled');
+function cancelled(signal: AbortSignal | undefined): Error {
+  const fallback = (): E2EError => new E2EError('infrastructure', 'CANCELLED', 'operation cancelled');
+  return signal === undefined ? fallback() : abortError(signal, fallback);
 }
 
 /** One read, cut at the deadline and at the attempt signal; a hung read's outcome is dropped. */
@@ -104,13 +105,13 @@ async function pollMatcher(
   const signal = signals.length === 0 ? undefined : AbortSignal.any(signals);
   let last: string | undefined;
   while (!deadline.expired()) {
-    if (signal?.aborted === true) throw cancelled();
+    if (signal?.aborted === true) throw cancelled(signal);
     let value: unknown;
     try {
       value = await sample(read, deadline, signal);
     } catch (error) {
       if (error instanceof ReadHung) break;
-      if (error instanceof ReadAborted) throw cancelled();
+      if (error instanceof ReadAborted) throw cancelled(signal);
       last = describeError(error);
       await sleep(Math.min(interval, deadline.remaining()), signal);
       continue;
