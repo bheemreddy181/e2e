@@ -42,6 +42,7 @@ export async function writeHostTrace(options: HostTraceOptions): Promise<void> {
   });
   const reported = report.run.results[0]!;
   const page = renderTracePage(report, reported, outcome(reported, new Map()), {
+    standalone: true,
     artifactsDir: toPosixPath(path.relative(config.projectRoot, options.resultsDir)),
     pageDir: toPosixPath(path.join(...options.segments)),
     readArtifact: (reportPath) => {

@@ -146,7 +146,9 @@ describe('openHost', { timeout: 60_000 }, () => {
     for (const session of [first, second]) {
       expect(path.isAbsolute(session.artifactsDir)).toBe(true);
       expect(path.isAbsolute(session.tracePath)).toBe(true);
-      expect(readFileSync(session.tracePath, 'utf8')).toContain('gadget.poke');
+      const trace = readFileSync(session.tracePath, 'utf8');
+      expect(trace).toContain('gadget.poke');
+      expect(trace).not.toContain('report.json');
     }
     expect(await opened.close()).toEqual([]);
     expect(await opened.close()).toEqual([]);
