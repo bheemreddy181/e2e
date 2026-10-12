@@ -12,7 +12,7 @@ const runnerModule = new URL('../../dist/runner.js', import.meta.url).href;
 export const sdkModule = new URL('../../dist/index.js', import.meta.url).href;
 export const { openHost } = (await import(runnerModule)) as typeof import('../../src/runner.ts');
 export const { credentials, expect: sdkExpect, secrets } = (await import(sdkModule)) as typeof import('../../src/index.ts');
-export const PROJECTS = new URL('../tmp-projects/', import.meta.url);
+const PROJECTS = new URL('../tmp-projects/', import.meta.url);
 /** Where a file config finds the engines a test made. */
 export const ENGINES = '__e2eOpenHostTestEngines';
 
