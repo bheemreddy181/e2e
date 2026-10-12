@@ -14,7 +14,7 @@ import { PreparedEngines, recordingNotices, startDeclaredProcesses, validateEngi
 import { processSecrets } from './secrecy.ts';
 import { SessionStore } from './sessions.ts';
 import {
-  launchAttempt, reserveAttempt, type AttemptClosed, type AttemptKind, type AttemptReservation, type StandaloneAttempt, type StandaloneSessionOptions,
+  launchAttempt, reserveAttempt, type AttemptKind, type AttemptReservation, type StandaloneAttempt, type StandaloneSessionOptions,
 } from './standalone-attempt.ts';
 
 export type { StandaloneAttempt, StandaloneSessionOptions } from './standalone-attempt.ts';
@@ -39,24 +39,38 @@ export interface StandaloneHost {
   close(): Promise<readonly SerializedError[]>;
 }
 
+/**
+ * Where the worker is between attempts. `retired` follows an attempt whose
+ * engine cleanup failed: its isolation is uncertain, so no later attempt may
+ * reuse the worker.
+ */
+type WorkerState =
+  | { readonly phase: 'idle' }
+  | { readonly phase: 'opening'; readonly pending: Promise<StandaloneAttempt> }
+  | { readonly phase: 'live'; readonly attempt: StandaloneAttempt }
+  | { readonly phase: 'retired' };
+
 const engineOwners = realmSlot<WeakSet<object>>('e2e.standalone.engines.v1');
 
-/**
- * Refuses an engine instance another host owns. A hosted worker then owns it
- * until its teardown settles cleanly; the one-shot path keeps its existing
- * policy of checking without owning.
- */
-function claimEngine(engine: ResolvedTarget['engine'], kind: AttemptKind): () => void {
-  if (engine === undefined) return () => undefined;
-  let owners = engineOwners.get(globalThis);
-  if (owners === undefined) {
-    owners = new WeakSet<object>();
-    engineOwners.set(globalThis, owners);
+function owners(): WeakSet<object> {
+  let set = engineOwners.get(globalThis);
+  if (set === undefined) {
+    set = new WeakSet<object>();
+    engineOwners.set(globalThis, set);
   }
-  if (owners.has(engine)) throw new InfrastructureError('WORKER_PROTOCOL', 'the engine instance already belongs to an e2e host');
-  if (kind === 'one-shot') return () => undefined;
-  owners.add(engine);
-  return () => owners.delete(engine);
+  return set;
+}
+
+/** No host may drive an engine instance another host owns. */
+function refuseOwnedEngine(engine: object | undefined): void {
+  if (engine !== undefined && owners().has(engine)) throw new InfrastructureError('WORKER_PROTOCOL', 'the engine instance already belongs to an e2e host');
+}
+
+/** A hosted worker owns its engine from before prepare until its teardown settles cleanly. */
+function claimEngine(engine: object | undefined): () => void {
+  if (engine === undefined) return () => undefined;
+  owners().add(engine);
+  return () => owners().delete(engine);
 }
 
 /** Prepares, starts app processes, and initializes one worker for a hosted test runner. */
@@ -64,16 +78,11 @@ export function openStandaloneHost(options: StandaloneHostOptions): Promise<Stan
   return openWorker(options, 'hosted');
 }
 
-/** MCP's one attempt on a worker of its own, closed together. */
+/** MCP's one attempt on a worker of its own, closed together. MCP keeps its own engine ownership. */
 export async function openStandaloneAttempt(options: StandaloneAttemptOptions): Promise<StandaloneAttempt> {
   const host = await openWorker(options, 'one-shot');
   try {
-    const attempt = await host.openAttempt(options);
-    let closing: Promise<readonly SerializedError[]> | undefined;
-    return { ...attempt, close: () => {
-      closing ??= host.close();
-      return closing;
-    } };
+    return { ...await host.openAttempt(options), close: host.close };
   } catch (cause) {
     await host.close();
     throw cause;
@@ -91,7 +100,8 @@ async function openWorker(options: StandaloneHostOptions, kind: AttemptKind): Pr
   const runId = uuidv7();
   const grade = validateEngine(target);
   for (const message of recordingNotices([{ target, pairs: [] }], new Map([[target.name, grade]]))) notice(target.name, message);
-  const releaseEngine = claimEngine(target.engine, kind);
+  refuseOwnedEngine(target.engine);
+  const releaseEngine = kind === 'hosted' ? claimEngine(target.engine) : () => undefined;
   const releaseRegistry = holdSecretRegistry(config);
   const engines = new PreparedEngines();
   const layout = outputLayout(config.output);
@@ -103,7 +113,7 @@ async function openWorker(options: StandaloneHostOptions, kind: AttemptKind): Pr
   let processes: AppProcesses | undefined;
   let executor: TargetExecutor | undefined;
   let tearingDown: Promise<void> | undefined;
-  /** Releases every owner once, whichever of launch failure, attempt close, or host close gets there first. */
+  /** Releases every owner once, whichever of host close or a retiring attempt gets there first. */
   const teardown = (): Promise<void> => {
     tearingDown ??= (async () => {
       // Attempt failures are the caller's to report; only teardown's own decide engine reuse.
@@ -145,21 +155,19 @@ async function openWorker(options: StandaloneHostOptions, kind: AttemptKind): Pr
     throw cause;
   }
   const worker = { kind, config, target, runId, executor, resultsDir: layout.results, debug, signal };
-  let opening: Promise<StandaloneAttempt> | undefined;
-  let active: StandaloneAttempt | undefined;
+  let state: WorkerState = { phase: 'idle' };
   let closing: Promise<readonly SerializedError[]> | undefined;
-  /** Set once an attempt's cleanup failed: its isolation is uncertain, so no later attempt may reuse the worker. */
-  let retired = false;
 
   /** Cancels a launch before awaiting it, then ends the attempt before disposing its worker. */
   const close = (): Promise<readonly SerializedError[]> => {
-    if (closing !== undefined) return closing;
-    hostEnd.abort();
-    closing = (async () => {
-      if (opening !== undefined) await opening.catch(() => undefined);
-      try {
-        if (active !== undefined) errors.push(...await active.close());
-      } catch (cause) { failure(cause); }
+    closing ??= (async () => {
+      hostEnd.abort();
+      if (state.phase === 'opening') await state.pending.catch(() => undefined);
+      if (state.phase === 'live') {
+        try {
+          errors.push(...await state.attempt.close());
+        } catch (cause) { failure(cause); }
+      }
       await teardown();
       return errors;
     })();
@@ -168,34 +176,33 @@ async function openWorker(options: StandaloneHostOptions, kind: AttemptKind): Pr
 
   /** Reserves the attempt synchronously, before any engine work can run. */
   const openAttempt = (sessionOptions: StandaloneSessionOptions): Promise<StandaloneAttempt> => {
-    if (closing !== undefined || retired) return Promise.reject(new InfrastructureError('WORKER_PROTOCOL', 'the e2e host is closed'));
-    if (opening !== undefined || active !== undefined) {
-      return Promise.reject(new InfrastructureError('WORKER_PROTOCOL', 'the e2e host already has an opening, live, or closing session'));
-    }
+    if (closing !== undefined || state.phase === 'retired') return Promise.reject(new InfrastructureError('WORKER_PROTOCOL', 'the e2e host is closed'));
+    if (state.phase !== 'idle') return Promise.reject(new InfrastructureError('WORKER_PROTOCOL', 'the e2e host already has an opening, live, or closing session'));
     let reservation: AttemptReservation;
     try {
       reservation = reserveAttempt(worker, sessionOptions);
     } catch (cause) { return Promise.reject(cause); }
-    const onClosed = async ({ cleanup }: AttemptClosed): Promise<void> => {
-      if (cleanup !== 'complete') {
-        retired = true;
-        hostEnd.abort();
-        await teardown();
+    const pending = launchAttempt(worker, reservation, async ({ cleanup }) => {
+      if (cleanup === 'complete') {
+        state = { phase: 'idle' };
+        return;
       }
-      if (active === launched) active = undefined;
-    };
-    let launched: StandaloneAttempt | undefined;
-    // The microtask makes the reservation visible even if launch throws synchronously.
-    const pending = Promise.resolve().then(async () => {
-      launched = await launchAttempt(worker, reservation, onClosed);
-      active = launched;
-      return launched;
-    });
-    const settled = pending
-      .catch((cause: unknown) => { reservation.release(); throw cause; })
-      .finally(() => { if (opening === settled) opening = undefined; });
-    opening = settled;
-    return settled;
+      state = { phase: 'retired' };
+      hostEnd.abort();
+      await teardown();
+    }).then(
+      (attempt) => {
+        state = { phase: 'live', attempt };
+        return attempt;
+      },
+      (cause: unknown) => {
+        reservation.release();
+        state = { phase: 'idle' };
+        throw cause;
+      },
+    );
+    state = { phase: 'opening', pending };
+    return pending;
   };
   return { runId, openAttempt, close };
 }

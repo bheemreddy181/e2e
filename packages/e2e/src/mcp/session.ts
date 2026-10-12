@@ -21,6 +21,7 @@ import { secretHandle } from '../secrets.ts';
 import { classifyError, ConfigurationError, errorMessage, InfrastructureError, type SerializedError } from '../internal/errors.ts';
 import { LocatorEngine } from '../locator/engine.ts';
 import { allocateTargetPorts } from '../run/app-ports.ts';
+import { selectTarget } from '../run/select-target.ts';
 import { SharedAppProcesses } from '../run/process-pool.ts';
 import { outputLayout } from '../run/output.ts';
 import { processSecrets, registerStaticSecrets, sessionSecrecy } from '../run/secrecy.ts';
@@ -250,7 +251,7 @@ export class SessionHost {
     });
     // A session is its own run: a URL declared with port 0 gets a port here,
     // for the opened target alone, so another target's URL cannot fail the open.
-    const { config, target } = await allocateTargetPorts(loaded, this.resolveTarget(loaded, options.target));
+    const { config, target } = await allocateTargetPorts(loaded, selectTarget(loaded, options.target ?? this.options.defaultTarget, 'pass target to open_session, or start e2e mcp --target <name>'));
     usage.resolved(target.platform, target.engine);
     this.sessions.claimEngine(id, target.name, target.engine);
     const ttlMs = this.options.ttlMs ?? SESSION_TTL_MS;
@@ -425,25 +426,6 @@ export class SessionHost {
 
   private catalogLines(live: LiveSession): string[] {
     return Object.entries(live.catalog.tools).map(([name, tool]) => catalogLine(name, tool, live.catalog.readOnly.has(name)));
-  }
-
-  private resolveTarget(config: ResolvedConfig, requested: string | undefined): ResolvedTarget {
-    const name = requested ?? this.options.defaultTarget;
-    const names = config.targets.map((target) => target.name);
-    if (name !== undefined) {
-      const target = config.targets.find((candidate) => candidate.name === name);
-      if (target === undefined) {
-        throw new ConfigurationError('UNKNOWN_TARGET', `unknown target "${name}"; the config declares ${names.map((n) => `"${n}"`).join(', ')}`);
-      }
-      return target;
-    }
-    const [only] = config.targets;
-    if (only !== undefined && config.targets.length === 1) return only;
-    if (only === undefined) throw new ConfigurationError('INVALID_CONFIG', 'the config declares no targets');
-    throw new ConfigurationError(
-      'TARGET_REQUIRED',
-      `the config declares several targets (${names.join(', ')}); pass target to open_session, or start e2e mcp --target <name>`,
-    );
   }
 
   /** Every configured secret, passwords included, as a step secret, so `type_secret` can fill it. */

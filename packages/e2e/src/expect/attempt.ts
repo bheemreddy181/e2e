@@ -6,7 +6,6 @@ import { realmSlot } from '../internal/realm-slot.ts';
 import type { AttemptBudget } from '../run/budget.ts';
 import type { SoftFailures } from './soft.ts';
 import type { PollScope } from './poll-scope.ts';
-import type { SecretRegistry } from '../secrets.ts';
 
 export interface PublishedAttempt {
   readonly attemptId: string;
@@ -20,8 +19,6 @@ export interface PublishedAttempt {
   readonly soft: SoftFailures;
   /** Hosted callers have no runner-owned body lineage; their polls belong to the session. */
   readonly polls?: PollScope;
-  /** A hosted attempt takes precedence over registries held by dormant worker hosts. */
-  readonly registry?: SecretRegistry;
 }
 
 /**

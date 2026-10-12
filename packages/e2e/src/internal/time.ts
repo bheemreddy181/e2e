@@ -33,7 +33,8 @@ export function abortError(signal: AbortSignal, fallback: () => Error): Error {
   return isE2EError(signal.reason) ? signal.reason : fallback();
 }
 
-function cancelledError(): E2EError {
+/** The error a bare cancellation stands for. */
+export function cancelledError(): E2EError {
   return new E2EError('infrastructure', 'CANCELLED', 'operation cancelled');
 }
 
@@ -50,7 +51,7 @@ export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
     }, ms);
     const onAbort = () => {
       cleanup();
-      reject(abortError(signal!, cancelledError));
+      reject(signal === undefined ? cancelledError() : abortError(signal, cancelledError));
     };
     const cleanup = () => {
       clearTimeout(timer);
@@ -200,29 +201,30 @@ export async function withScopedBudget<T>(
 }
 
 /**
- * Races a promise against an abort signal; on abort invokes onAbort to build
- * the error. The promise is left running: the caller is abandoning it.
+ * Races a promise against an abort signal; on abort fails with the signal's
+ * own classified error, else the one `fallback` builds. The promise is left
+ * running: the caller is abandoning it.
  */
 export async function withAbort<T>(
   work: Promise<T> | (() => Promise<T>),
   signal: AbortSignal,
-  onAbort: () => Error,
+  fallback: () => Error,
 ): Promise<T> {
   if (signal.aborted) {
     if (typeof work !== 'function') void work.catch(() => undefined);
-    throw abortError(signal, onAbort);
+    throw abortError(signal, fallback);
   }
   const promise = typeof work === 'function' ? work() : work;
   if (signal.aborted) {
     void promise.catch(() => undefined);
-    throw abortError(signal, onAbort);
+    throw abortError(signal, fallback);
   }
   let listener: (() => void) | undefined;
   try {
     return await Promise.race([
       promise,
       new Promise<never>((_, reject) => {
-        listener = () => reject(abortError(signal, onAbort));
+        listener = () => reject(abortError(signal, fallback));
         signal.addEventListener('abort', listener, { once: true });
       }),
     ]);

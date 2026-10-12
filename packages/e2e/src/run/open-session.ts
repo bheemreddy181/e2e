@@ -1,11 +1,12 @@
 /** Hosted test runners keep a worker alive while opening isolated per-test attempts. */
 
 import { discoverConfig, loadConfigModule, missingConfigError } from '../config/load.ts';
-import { resolveConfig, type ResolvedConfig, type ResolvedTarget } from '../config/resolve.ts';
+import { resolveConfig, type ResolvedConfig } from '../config/resolve.ts';
 import { classifyError, ConfigurationError, E2EError, serializeError, type SerializedError } from '../internal/errors.ts';
 import type { E2EConfig, TestFixtures } from '../types.ts';
 import { allocateTargetPorts } from './app-ports.ts';
 import { processSecrets, registerStaticSecrets } from './secrecy.ts';
+import { selectTarget } from './select-target.ts';
 import { openStandaloneHost } from './standalone.ts';
 import type { StepProgress, StepRecord } from './steps.ts';
 
@@ -75,7 +76,7 @@ async function openHostWorker<Fixtures extends object>(options: OpenHostOptions)
   const env = options.env ?? process.env;
   const loaded = await loadHostConfig(cwd, options.config, env);
   registerStaticSecrets(loaded.allSecrets);
-  const { config, target } = await allocateTargetPorts(loaded, resolveTarget(loaded, options.target));
+  const { config, target } = await allocateTargetPorts(loaded, selectTarget(loaded, options.target, 'pass `target` to openHost'));
   const host = await openStandaloneHost({
     config, target, headed: options.headed ?? false, env,
     signal: options.signal ?? new AbortController().signal,
@@ -136,18 +137,4 @@ async function loadHostConfig(cwd: string, config: string | E2EConfig | undefine
   if (discovered.configPath === undefined) throw missingConfigError(cwd);
   const raw = await loadConfigModule(discovered.configPath, { graph: true });
   return resolveConfig(raw, { projectRoot: discovered.projectRoot, configPath: discovered.configPath, env });
-}
-
-/** Applies the same explicit target selection as the one-shot MCP path. */
-function resolveTarget(config: ResolvedConfig, name: string | undefined): ResolvedTarget {
-  const names = config.targets.map((target) => `"${target.name}"`).join(', ');
-  if (name !== undefined) {
-    const target = config.targets.find((candidate) => candidate.name === name);
-    if (target === undefined) throw new ConfigurationError('UNKNOWN_TARGET', `unknown target "${name}"; the config declares ${names}`);
-    return target;
-  }
-  const [only] = config.targets;
-  if (only === undefined) throw new ConfigurationError('INVALID_CONFIG', 'the config declares no targets');
-  if (config.targets.length > 1) throw new ConfigurationError('TARGET_REQUIRED', `the config declares several targets (${names}); pass \`target\` to openHost`);
-  return only;
 }

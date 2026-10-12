@@ -75,14 +75,10 @@ export class FixtureRecorder {
       if (timeout !== false && timeout !== undefined && (!Number.isFinite(timeout) || timeout <= 0)) {
         throw new TestError('INVALID_ARGUMENT', `${api} timeout must be positive and finite`);
       }
-      const remaining = environment.budget.deadline.remaining();
-      const expired = () => new TestError('TEST_TIMEOUT', `${api} exceeded the attempt deadline`);
-      if (remaining === 0) throw expired();
       const pending = withAbort(() => translated(api, body), environment.budget.signal, () => new TestError('CANCELLED', `${api} cancelled`));
-      const timeoutMs = timeout === false ? Number.POSITIVE_INFINITY : timeout ?? environment.config.actionTimeout;
-      return withTimeout(pending, Math.min(timeoutMs, remaining), () => remaining <= timeoutMs
-        ? expired()
-        : new TestError('ACTION_FAILED', `${api} exceeded its timeout of ${timeoutMs}ms`));
+      if (timeout === false) return pending;
+      const timeoutMs = timeout ?? environment.config.actionTimeout;
+      return withTimeout(pending, timeoutMs, () => new TestError('ACTION_FAILED', `${api} exceeded its timeout of ${timeoutMs}ms`));
     }, { verifies: operation.verifies ?? operation.kind === 'assertion' });
   }
 }

@@ -46,7 +46,8 @@ suites that consume the built packages the way a user would.
   - `src/run/` runner core (scheduler, units, workers, retries, sessions;
     `standalone.ts` is the worker a host or MCP's one-shot attempt keeps
     alive, `standalone-attempt.ts` one attempt on it: reservation, launch,
-    fixtures, deadline, close, and `host-trace.ts` its `trace.md`;
+    fixtures, deadline, close, `host-trace.ts` its `trace.md`, and
+    `select-target.ts` the target a session names, shared with MCP;
     `open-session.ts` exposes `openHost` on `e2e/runner` for another test
     runner: worker-lifetime provisioning, app processes, and engine init,
     then `host.openSession({ name })` for each test's fixtures, deadline,

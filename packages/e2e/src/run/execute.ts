@@ -1281,8 +1281,8 @@ export class TargetExecutor implements SerialHost {
  * timeout that had already fired: the attempt then timed out, whatever
  * arrived after.
  */
-function classifyAttemptStatus(
-  failure: E2EError,
+export function classifyAttemptStatus(
+  failure: { readonly code: string },
   timedOut: boolean,
   interrupted: boolean,
 ): 'failed' | 'timed-out' | 'interrupted' {

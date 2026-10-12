@@ -298,11 +298,7 @@ export interface StepRecorderOptions {
   readonly projectRoot?: string;
   /** Replaces secret values in a step's label, and in its error's message and details, before the record keeps them. */
   readonly redact?: (text: string) => string;
-  /**
-   * Cuts every running step when it aborts, for an attempt with no test body
-   * whose race would: the step fails with the signal's error, and the body
-   * still running is abandoned. A run's body race covers this instead.
-   */
+  /** Cuts every running step when it aborts: the step fails with the signal's error and its body is abandoned. */
   readonly signal?: AbortSignal;
 }
 

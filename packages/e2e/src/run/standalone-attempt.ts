@@ -12,14 +12,15 @@ import type { DebugTrace } from '../internal/debug.ts';
 import { classifyError, ConfigurationError, InfrastructureError, serializeError, TestTimeoutError, type SerializedError } from '../internal/errors.ts';
 import { resultId, timestamp, uuidv7 } from '../internal/ids.ts';
 import { Deadline, withTimeout } from '../internal/time.ts';
-import { attemptVideo, type ResolvedRecording, type VideoRecording } from '../internal/recording-modes.ts';
+import { attemptVideo } from '../internal/recording-modes.ts';
 import type { TestFixtures } from '../types.ts';
 import { createAttemptArtifacts, resultSegment } from './artifacts.ts';
 import { AttemptBudget } from './budget.ts';
-import type { ClosingRecord, TargetExecutor } from './execute.ts';
+import { classifyAttemptStatus, type ClosingRecord, type TargetExecutor } from './execute.ts';
 import { createFixtures } from './fixtures.ts';
 import { writeHostTrace } from './host-trace.ts';
 import type { AttemptRecord } from './records.ts';
+import { holdSecretRegistry } from '../secrets.ts';
 import { processSecrets, redactForSession, sessionSecrecy } from './secrecy.ts';
 import { StepRecorder, type StepProgress } from './steps.ts';
 import { WorkerModels } from './worker-models.ts';
@@ -79,7 +80,7 @@ export interface AttemptReservation {
   readonly budget: AttemptBudget;
   readonly soft: SoftFailures;
   readonly polls: PollScope;
-  /** Withdraws the publication once cleanup has settled. */
+  /** Withdraws the publication and the registry hold once cleanup has settled. */
   readonly release: () => void;
 }
 
@@ -106,12 +107,13 @@ export function reserveAttempt(worker: AttemptWorker, options: StandaloneSession
   const budget = new AttemptBudget(signal, new Deadline(options.timeoutMs));
   const soft = new SoftFailures();
   const polls = new PollScope('the hosted session');
+  if (worker.kind === 'one-shot') return { attemptId, options, end, signal, budget, soft, polls, release: () => undefined };
+  const { config } = worker;
   const publication = new AbortController();
-  if (worker.kind === 'hosted') {
-    const { config } = worker;
-    publishAttempt({ attemptId, testKind: 'test', assertionTimeout: config.assertionTimeout, budget, soft, polls, registry: config }, publication.signal);
-  }
-  return { attemptId, options, end, signal, budget, soft, polls, release: () => publication.abort() };
+  publishAttempt({ attemptId, testKind: 'test', assertionTimeout: config.assertionTimeout, budget, soft, polls }, publication.signal);
+  // The live attempt's secrets resolve against its own config while other hosts hold theirs.
+  const releaseRegistry = holdSecretRegistry(config, { live: true });
+  return { attemptId, options, end, signal, budget, soft, polls, release: () => { publication.abort(); releaseRegistry(); } };
 }
 
 /**
@@ -150,12 +152,10 @@ export async function launchAttempt(
   const verdict = (): { status: AttemptRecord['status']; error: SerializedError | undefined } => {
     const step = steps.all().find((candidate) => candidate.status !== 'passed');
     const error = attemptErrors[0] ?? step?.error;
-    const status = error === undefined ? 'passed'
-      : error.code === 'CANCELLED' ? 'interrupted'
-      : error.code === 'TEST_TIMEOUT' || step?.status === 'timed-out' ? 'timed-out' : 'failed';
-    return { status, error };
+    if (error === undefined) return { status: 'passed', error };
+    return { status: classifyAttemptStatus(error, step?.status === 'timed-out', error.code === 'CANCELLED'), error };
   };
-  const video = worker.kind === 'hosted' ? attemptVideo(target.video, 0) : sessionRecording(target.video);
+  const video = attemptVideo(target.video, 0);
   session = await executor.launchSession({ session: undefined, recordings: { trace: undefined, video } }, attemptId, artifacts.dir, attemptSignal);
   const opened = session;
   const closeOpened = (record: ClosingRecord): Promise<void> =>
@@ -265,10 +265,4 @@ function attemptIdentity(worker: AttemptWorker, attemptId: string, agent: string
   const title = providerSecrets ? 'session' : processSecrets.redact(redactedName);
   const segment = resultSegment({ id: resultId(testId, target.name, agent, 0), file: 'host', titlePath: [title] });
   return { testId, segments: ['host', segment] };
-}
-
-/** One-shot sessions never keep a recording that would only survive a failure. */
-function sessionRecording(recording: ResolvedRecording): VideoRecording | undefined {
-  const planned = attemptVideo(recording, 0);
-  return planned?.keep === 'on-failure' ? undefined : planned;
 }

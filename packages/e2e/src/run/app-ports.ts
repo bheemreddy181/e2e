@@ -7,20 +7,30 @@
 
 import net from 'node:net';
 import { assignPorts, type ResolvedConfig, type ResolvedTarget } from '../config/resolve.ts';
-import { ConfigurationError, errorMessage, InfrastructureError } from '../internal/errors.ts';
+import { ConfigurationError, errorMessage } from '../internal/errors.ts';
 
 /**
  * The config with a free port assigned to every target whose URL asked for
  * one and has none yet; the same config when none did. Every port is held
  * until all are chosen, so two targets never receive the same one. A
  * loopback host this machine cannot bind is a bad app URL, reported before
- * anything starts. `only` limits allocation to the named targets, for a
- * session that opens one target and must not fail on another's URL.
+ * anything starts.
  */
-export async function allocateAppPorts(config: ResolvedConfig, only?: readonly string[]): Promise<ResolvedConfig> {
-  const pending = config.targets.filter(
-    (target) => target.app.portRequest !== undefined && !Object.hasOwn(config.ports, target.name) && (only === undefined || only.includes(target.name)),
-  );
+export async function allocateAppPorts(config: ResolvedConfig): Promise<ResolvedConfig> {
+  return allocatePorts(config, config.targets);
+}
+
+/**
+ * A port for one target alone, for a session that opens it and must not
+ * fail on another target's URL. Returns the config and the target as it now reads.
+ */
+export async function allocateTargetPorts(config: ResolvedConfig, target: ResolvedTarget): Promise<{ config: ResolvedConfig; target: ResolvedTarget }> {
+  const allocated = await allocatePorts(config, [target]);
+  return { config: allocated, target: allocated.targets.find((candidate) => candidate.name === target.name)! };
+}
+
+async function allocatePorts(config: ResolvedConfig, among: readonly ResolvedTarget[]): Promise<ResolvedConfig> {
+  const pending = among.filter((target) => target.app.portRequest !== undefined && !Object.hasOwn(config.ports, target.name));
   if (pending.length === 0) return config;
 
   const reserved: net.Server[] = [];
@@ -45,17 +55,6 @@ export async function allocateAppPorts(config: ResolvedConfig, only?: readonly s
     await Promise.all(reserved.map(release));
   }
   return assignPorts(config, ports);
-}
-
-/**
- * Ports for one target alone, for a session that opens it and must not fail
- * on another target's URL. Returns the config and the target as it now reads.
- */
-export async function allocateTargetPorts(config: ResolvedConfig, target: ResolvedTarget): Promise<{ config: ResolvedConfig; target: ResolvedTarget }> {
-  const allocated = await allocateAppPorts(config, [target.name]);
-  const assigned = allocated.targets.find((candidate) => candidate.name === target.name);
-  if (assigned === undefined) throw new InfrastructureError('WORKER_PROTOCOL', `target "${target.name}" vanished while its port was assigned`);
-  return { config: allocated, target: assigned };
 }
 
 /** Binds an ephemeral port on `host` and keeps it until released. */

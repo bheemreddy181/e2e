@@ -1,7 +1,7 @@
 /** expect.poll: re-reads a value until a synchronous matcher passes. */
 
-import { ConfigurationError, E2EError, isE2EError, TestError } from '../internal/errors.ts';
-import { abortError, Deadline, POLL_INTERVAL_MS, sleep, withAbort, withTimeout } from '../internal/time.ts';
+import { ConfigurationError, isE2EError, TestError } from '../internal/errors.ts';
+import { abortError, cancelledError, Deadline, POLL_INTERVAL_MS, sleep, withAbort, withTimeout } from '../internal/time.ts';
 import type { PollExpectation, PollOptions, ValueExpectation, ValueMatcherName } from '../types.ts';
 import { currentAttempt } from './attempt.ts';
 import { currentPollScope } from './poll-scope.ts';
@@ -52,8 +52,7 @@ function isNotYet(error: unknown): boolean {
 }
 
 function cancelled(signal: AbortSignal | undefined): Error {
-  const fallback = (): E2EError => new E2EError('infrastructure', 'CANCELLED', 'operation cancelled');
-  return signal === undefined ? fallback() : abortError(signal, fallback);
+  return signal === undefined ? cancelledError() : abortError(signal, cancelledError);
 }
 
 /** One read, cut at the deadline and at the attempt signal; a hung read's outcome is dropped. */
