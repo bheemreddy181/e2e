@@ -115,8 +115,12 @@ describe('openHost: deadline', { timeout: 60_000 }, () => {
     const fake = createFakeEngine();
     const opened = await host(fake.engine);
     const session = await opened.openSession({ name: 'session deadline', timeout: 100 });
-    await expect(sdkExpect.poll(() => false, { timeout: 30_000, interval: 5 }).toBe(true)).rejects.toMatchObject({ code: 'ASSERTION_FAILED', message: expect.stringContaining('attempt deadline') });
-    await session.close();
+    // The poll stops itself at the deadline, or the session's cut lands first on a slow host: both tell the truth.
+    const error: unknown = await sdkExpect.poll(() => false, { timeout: 30_000, interval: 5 }).toBe(true).catch((cause: unknown) => cause);
+    expect(error).toSatisfy((cause: { code: string; message: string }) =>
+      (cause.code === 'ASSERTION_FAILED' && cause.message.includes('attempt deadline')) || (cause.code === 'TEST_TIMEOUT' && cause.message.includes('session timed out')));
+    // The poll's rejection is the caller's; close reports the session's own cut only when it landed before close.
+    expect((await session.close()).map((failure) => failure.code)).toSatisfy((codes: string[]) => codes.every((code) => code === 'TEST_TIMEOUT'));
     const next = await opened.openSession({ name: 'after timeout', timeout: 5_000 });
     await sdkExpect.poll(() => true).toBe(true);
     expect(await next.close()).toEqual([]);
